@@ -17,8 +17,6 @@
 #ifndef ART_RUNTIME_GC_HEAP_INL_H_
 #define ART_RUNTIME_GC_HEAP_INL_H_
 
-#include "heap.h"
-
 #include "allocation_listener.h"
 #include "base/quasi_atomic.h"
 #include "base/time_utils.h"
@@ -26,12 +24,14 @@
 #include "gc/accounting/card_table-inl.h"
 #include "gc/allocation_record.h"
 #include "gc/collector/semi_space.h"
+#include "gc/page_align_alloc.h"
 #include "gc/space/bump_pointer_space-inl.h"
 #include "gc/space/dlmalloc_space-inl.h"
 #include "gc/space/large_object_space.h"
 #include "gc/space/region_space-inl.h"
 #include "gc/space/rosalloc_space-inl.h"
 #include "handle_scope-inl.h"
+#include "heap.h"
 #include "obj_ptr-inl.h"
 #include "runtime.h"
 #include "thread-inl.h"
@@ -93,8 +93,14 @@ inline mirror::Object* Heap::AllocObjectWithAllocator(Thread* self,
 
     // Need to check that we aren't the large object allocator since the large object allocation
     // code path includes this function. If we didn't check we would have an infinite loop.
-    if (kCheckLargeObject && UNLIKELY(ShouldAllocLargeObject(klass, byte_count))) {
+    if (kCheckLargeObject && (UNLIKELY(ShouldAllocAligned(klass, byte_count)) ||
+                              UNLIKELY(ShouldAllocLargeObject(klass, byte_count)))) {
       // AllocLargeObject can suspend and will recall PreObjectAllocated if needed.
+      if (ShouldAllocAligned(klass, byte_count)) {
+        align_header_size =
+            mirror::Array::DataOffset(1U << klass->GetComponentSizeShift()).SizeValue();
+        LOG(WARNING) << "page aligned alloc: " << align_header_size;
+      }
       obj = AllocLargeObject<kInstrumented, PreFenceVisitor>(self, &klass, byte_count,
                                                              pre_fence_visitor);
       if (obj != nullptr) {
@@ -290,8 +296,8 @@ inline mirror::Object* Heap::AllocLargeObject(Thread* self,
   // Save and restore the class in case it moves.
   StackHandleScope<1> hs(self);
   auto klass_wrapper = hs.NewHandleWrapper(klass);
-  mirror::Object* obj = AllocObjectWithAllocator<kInstrumented, false, PreFenceVisitor>
-                        (self, *klass, byte_count, kAllocatorTypeLOS, pre_fence_visitor);
+  mirror::Object* obj = AllocObjectWithAllocator<kInstrumented, false, PreFenceVisitor>(
+      self, *klass, byte_count, kAllocatorTypeLOS, pre_fence_visitor);
   // Java Heap Profiler check and sample allocation.
   if (GetHeapSampler().IsEnabled()) {
     JHPCheckNonTlabSampleAllocation(self, obj, byte_count);
@@ -434,6 +440,15 @@ inline mirror::Object* Heap::TryToAllocate(Thread* self,
     }
   }
   return ret;
+}
+
+inline bool Heap::ShouldAllocAligned(ObjPtr<mirror::Class> c, size_t byte_count) const {
+  if (!Runtime::Current()->IsAotCompiler() && c->IsPrimitiveArray()) {
+    size_t header_size = mirror::Array::DataOffset(1U << c->GetComponentSizeShift()).SizeValue();
+    size_t data_byte_count = byte_count - header_size;
+    return data_byte_count % 4096 == 0;
+  }
+  return false;
 }
 
 inline bool Heap::ShouldAllocLargeObject(ObjPtr<mirror::Class> c, size_t byte_count) const {

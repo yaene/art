@@ -286,6 +286,7 @@ cc_defaults {
         "gc/collector/sticky_mark_sweep.cc",
         "gc/gc_cause.cc",
         "gc/heap.cc",
+        "gc/page_align_alloc.cc",
         "gc/reference_processor.cc",
         "gc/reference_queue.cc",
         "gc/scoped_gc_critical_section.cc",

@@ -4096,8 +4096,8 @@ inline void MarkCompact::MarkObjectNonNull(mirror::Object* obj,
 
 template <bool kParallel>
 inline bool MarkCompact::MarkObjectNonNullNoPush(mirror::Object* obj,
-                                                 mirror::Object* holder,
-                                                 MemberOffset offset) {
+                                                 mirror::Object* /*holder*/,
+                                                 MemberOffset /*offset*/) {
   // We expect most of the referenes to be in bump-pointer space, so try that
   // first to keep the cost of this function minimal.
   if (LIKELY(HasAddress(obj))) {
@@ -4111,13 +4111,14 @@ inline bool MarkCompact::MarkObjectNonNullNoPush(mirror::Object* obj,
     return false;
   } else {
     // Must be a large-object space, otherwise it's a case of heap corruption.
-    if (!IsAlignedParam(obj, space::LargeObjectSpace::ObjectAlignment())) {
-      // Objects in large-object space are aligned to the large-object alignment.
-      // So if we have an object which doesn't belong to any space and is not
-      // page-aligned as well, then it's memory corruption.
-      // TODO: implement protect/unprotect in bump-pointer space.
-      heap_->GetVerification()->LogHeapCorruption(holder, offset, obj, /*fatal*/ true);
-    }
+    // IMORTANT: not a heap corruption with current payload aligned allocation
+    // if (!IsAlignedParam(obj, space::LargeObjectSpace::ObjectAlignment())) {
+    // Objects in large-object space are aligned to the large-object alignment.
+    // So if we have an object which doesn't belong to any space and is not
+    // page-aligned as well, then it's memory corruption.
+    // TODO: implement protect/unprotect in bump-pointer space.
+    // heap_->GetVerification()->LogHeapCorruption(holder, offset, obj, /*fatal*/ true);
+    //}
     DCHECK_NE(heap_->GetLargeObjectsSpace(), nullptr)
         << "ref=" << obj
         << " doesn't belong to any of the spaces and large object space doesn't exist";

@@ -161,9 +161,7 @@ class Heap {
   // Whether or not we use the free list large object space. Only use it if USE_ART_LOW_4G_ALLOCATOR
   // since this means that we have to use the slow msync loop in MemMap::MapAnonymous.
   static constexpr space::LargeObjectSpaceType kDefaultLargeObjectSpaceType =
-      USE_ART_LOW_4G_ALLOCATOR ?
-          space::LargeObjectSpaceType::kFreeList
-        : space::LargeObjectSpaceType::kMap;
+      space::LargeObjectSpaceType::kMap;
 
   // Used so that we don't overflow the allocation time atomic integer.
   static constexpr size_t kTimeAdjust = 1024;
@@ -1086,6 +1084,9 @@ class Heap {
         collector_type == kCollectorTypeHomogeneousSpaceCompact;
   }
   bool ShouldAllocLargeObject(ObjPtr<mirror::Class> c, size_t byte_count) const
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  bool ShouldAllocAligned(ObjPtr<mirror::Class> c, size_t byte_count) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Checks whether we should garbage collect:

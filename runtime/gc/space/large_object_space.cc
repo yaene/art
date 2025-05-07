@@ -16,11 +16,10 @@
 
 #include "large_object_space.h"
 
+#include <android-base/logging.h>
 #include <sys/mman.h>
 
 #include <memory>
-
-#include <android-base/logging.h>
 
 #include "base/macros.h"
 #include "base/memory_tool.h"
@@ -30,6 +29,7 @@
 #include "gc/accounting/heap_bitmap-inl.h"
 #include "gc/accounting/space_bitmap-inl.h"
 #include "gc/heap.h"
+#include "gc/page_align_alloc.h"
 #include "mirror/object-readbarrier-inl.h"
 #include "oat/image.h"
 #include "scoped_thread_state_change-inl.h"
@@ -54,6 +54,7 @@ class MemoryToolLargeObjectMapSpace final : public LargeObjectMapSpace {
   mirror::Object* Alloc(Thread* self, size_t num_bytes, size_t* bytes_allocated,
                         size_t* usable_size, size_t* bytes_tl_bulk_allocated)
       override {
+    LOG(WARNING) << "Using mem tool space";
     mirror::Object* obj =
         LargeObjectMapSpace::Alloc(self, num_bytes + MemoryToolRedZoneBytes() * 2, bytes_allocated,
                                    usable_size, bytes_tl_bulk_allocated);
@@ -138,29 +139,55 @@ LargeObjectMapSpace* LargeObjectMapSpace::Create(const std::string& name) {
 mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
                                            size_t* bytes_allocated, size_t* usable_size,
                                            size_t* bytes_tl_bulk_allocated) {
+  LOG(WARNING) << "Using large object map space";
   DCHECK_LE(gPageSize, ObjectAlignment())
       << "MapAnonymousAligned() should be used if the large-object alignment is larger than the "
          "runtime page size";
   std::string error_msg;
-  MemMap mem_map = MemMap::MapAnonymous("large object space allocation",
-                                        num_bytes,
-                                        PROT_READ | PROT_WRITE,
-                                        /*low_4gb=*/true,
-                                        &error_msg);
-  if (UNLIKELY(!mem_map.IsValid())) {
-    LOG(WARNING) << "Large object allocation failed: " << error_msg;
-    return nullptr;
+  mirror::Object* obj = nullptr;
+  MemMap mem_map;
+  bool do_page_align = align_header_size != 0;
+  if (do_page_align) {
+    const size_t data_offset = align_header_size;
+    align_header_size = 0;
+    // allocate enough pages for data + one for header
+    const size_t reserve_size = RoundUp(num_bytes, gPageSize) + gPageSize;
+    mem_map = MemMap::MapAnonymous("large object space page aligned allocation",
+                                   reserve_size,
+                                   PROT_READ | PROT_WRITE,
+                                   /*low_4gb=*/true,
+                                   &error_msg);
+    if (UNLIKELY(!mem_map.IsValid())) {
+      LOG(WARNING) << "Large object allocation failed: " << error_msg;
+      return nullptr;
+    }
+    void* map_base = mem_map.Begin();
+    uintptr_t map_raw = reinterpret_cast<uintptr_t>(map_base);
+    uintptr_t data_start = RoundUp(map_raw + data_offset, gPageSize);
+    uintptr_t header_ptr = data_start - data_offset;
+    obj = reinterpret_cast<mirror::Object*>(header_ptr);
+  } else {
+    mem_map = MemMap::MapAnonymous("large object space allocation",
+                                   num_bytes,
+                                   PROT_READ | PROT_WRITE,
+                                   /*low_4gb=*/true,
+                                   &error_msg);
+    if (UNLIKELY(!mem_map.IsValid())) {
+      LOG(WARNING) << "Large object allocation failed: " << error_msg;
+      return nullptr;
+    }
+    obj = reinterpret_cast<mirror::Object*>(mem_map.Begin());
   }
-  mirror::Object* const obj = reinterpret_cast<mirror::Object*>(mem_map.Begin());
   const size_t allocation_size = mem_map.BaseSize();
   MutexLock mu(self, lock_);
+  uint8_t* map_start = reinterpret_cast<uint8_t*>(mem_map.Begin());
   large_objects_.Put(obj, LargeObject {std::move(mem_map), false /* not zygote */});
   DCHECK(bytes_allocated != nullptr);
 
-  if (begin_ == nullptr || begin_ > reinterpret_cast<uint8_t*>(obj)) {
-    begin_ = reinterpret_cast<uint8_t*>(obj);
+  if (begin_ == nullptr || begin_ > map_start) {
+    begin_ = map_start;
   }
-  end_ = std::max(end_, reinterpret_cast<uint8_t*>(obj) + allocation_size);
+  end_ = std::max(end_, map_start + allocation_size);
 
   *bytes_allocated = allocation_size;
   if (usable_size != nullptr) {
@@ -535,6 +562,7 @@ size_t FreeListSpace::AllocationSize(mirror::Object* obj, size_t* usable_size) {
 mirror::Object* FreeListSpace::Alloc(Thread* self, size_t num_bytes, size_t* bytes_allocated,
                                      size_t* usable_size, size_t* bytes_tl_bulk_allocated) {
   MutexLock mu(self, lock_);
+  LOG(WARNING) << "Using free list space";
   const size_t allocation_size = RoundUp(num_bytes, ObjectAlignment());
   AllocationInfo temp_info;
   temp_info.SetPrevFreeBytes(allocation_size);
