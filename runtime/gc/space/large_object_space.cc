@@ -40,6 +40,10 @@ namespace art HIDDEN {
 namespace gc {
 namespace space {
 
+mirror::Object* PageAlign(mirror::Object* ptr) {
+  return reinterpret_cast<mirror::Object*>(reinterpret_cast<uintptr_t>(ptr) & ~(gPageSize - 1));
+}
+
 class MemoryToolLargeObjectMapSpace final : public LargeObjectMapSpace {
  public:
   explicit MemoryToolLargeObjectMapSpace(const std::string& name) : LargeObjectMapSpace(name) {
@@ -144,6 +148,7 @@ mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
       << "MapAnonymousAligned() should be used if the large-object alignment is larger than the "
          "runtime page size";
   std::string error_msg;
+  size_t usable_bytes = 0;
   mirror::Object* obj = nullptr;
   MemMap mem_map;
   bool do_page_align = align_header_size != 0;
@@ -165,6 +170,7 @@ mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
     uintptr_t map_raw = reinterpret_cast<uintptr_t>(map_base);
     uintptr_t data_start = RoundUp(map_raw + data_offset, gPageSize);
     uintptr_t header_ptr = data_start - data_offset;
+    usable_bytes = reserve_size + data_offset - gPageSize;
     obj = reinterpret_cast<mirror::Object*>(header_ptr);
   } else {
     mem_map = MemMap::MapAnonymous("large object space allocation",
@@ -176,12 +182,13 @@ mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
       LOG(WARNING) << "Large object allocation failed: " << error_msg;
       return nullptr;
     }
+    usable_bytes = mem_map.BaseSize();
     obj = reinterpret_cast<mirror::Object*>(mem_map.Begin());
   }
   const size_t allocation_size = mem_map.BaseSize();
   MutexLock mu(self, lock_);
   uint8_t* map_start = reinterpret_cast<uint8_t*>(mem_map.Begin());
-  large_objects_.Put(obj, LargeObject {std::move(mem_map), false /* not zygote */});
+  large_objects_.Put(PageAlign(obj), LargeObject{std::move(mem_map), false /* not zygote */});
   DCHECK(bytes_allocated != nullptr);
 
   if (begin_ == nullptr || begin_ > map_start) {
@@ -191,7 +198,7 @@ mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
 
   *bytes_allocated = allocation_size;
   if (usable_size != nullptr) {
-    *usable_size = allocation_size;
+    *usable_size = usable_bytes;
   }
   DCHECK(bytes_tl_bulk_allocated != nullptr);
   *bytes_tl_bulk_allocated = allocation_size;
@@ -199,12 +206,13 @@ mirror::Object* LargeObjectMapSpace::Alloc(Thread* self, size_t num_bytes,
   total_bytes_allocated_ += allocation_size;
   ++num_objects_allocated_;
   ++total_objects_allocated_;
+  LOG(WARNING) << "Alloc: " << obj;
   return obj;
 }
 
 bool LargeObjectMapSpace::IsZygoteLargeObject(Thread* self, mirror::Object* obj) const {
   MutexLock mu(self, lock_);
-  auto it = large_objects_.find(obj);
+  auto it = large_objects_.find(PageAlign(obj));
   CHECK(it != large_objects_.end());
   return it->second.is_zygote;
 }
@@ -222,7 +230,8 @@ void LargeObjectMapSpace::SetAllLargeObjectsAsZygoteObjects(Thread* self, bool s
 
 size_t LargeObjectMapSpace::Free(Thread* self, mirror::Object* ptr) {
   MutexLock mu(self, lock_);
-  auto it = large_objects_.find(ptr);
+  LOG(WARNING) << "Free " << ptr;
+  auto it = large_objects_.find(PageAlign(ptr));
   if (UNLIKELY(it == large_objects_.end())) {
     ScopedObjectAccess soa(self);
     Runtime::Current()->GetHeap()->DumpSpaces(LOG_STREAM(FATAL_WITHOUT_ABORT));
@@ -239,7 +248,7 @@ size_t LargeObjectMapSpace::Free(Thread* self, mirror::Object* ptr) {
 
 size_t LargeObjectMapSpace::AllocationSize(mirror::Object* obj, size_t* usable_size) {
   MutexLock mu(Thread::Current(), lock_);
-  auto it = large_objects_.find(obj);
+  auto it = large_objects_.find(PageAlign(obj));
   CHECK(it != large_objects_.end()) << "Attempted to get size of a large object which is not live";
   size_t alloc_size = it->second.mem_map.BaseSize();
   if (usable_size != nullptr) {
@@ -279,10 +288,10 @@ bool LargeObjectMapSpace::Contains(const mirror::Object* obj) const {
   Thread* self = Thread::Current();
   if (lock_.IsExclusiveHeld(self)) {
     // We hold lock_ so do the check.
-    return large_objects_.find(const_cast<mirror::Object*>(obj)) != large_objects_.end();
+    return large_objects_.find(PageAlign(const_cast<mirror::Object*>(obj))) != large_objects_.end();
   } else {
     MutexLock mu(self, lock_);
-    return large_objects_.find(const_cast<mirror::Object*>(obj)) != large_objects_.end();
+    return large_objects_.find(PageAlign(const_cast<mirror::Object*>(obj))) != large_objects_.end();
   }
 }
 
