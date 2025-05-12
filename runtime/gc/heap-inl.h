@@ -446,7 +446,7 @@ inline bool Heap::ShouldAllocAligned(ObjPtr<mirror::Class> c, size_t byte_count)
   if (!Runtime::Current()->IsAotCompiler() && c->IsPrimitiveArray()) {
     size_t header_size = mirror::Array::DataOffset(1U << c->GetComponentSizeShift()).SizeValue();
     size_t data_byte_count = byte_count - header_size;
-    return data_byte_count % 4096 == 0;
+    return data_byte_count >= large_object_threshold_ || data_byte_count % 4096 == 0;
   }
   return false;
 }
